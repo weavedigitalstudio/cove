@@ -216,6 +216,13 @@ cove ports --http 8090 --https 8453     # switch to alternatives
 cove ports --dry-run                    # preview the effect of a port change
 ```
 
+For local listeners that must coexist with another service on the same port
+but a different interface, set `COVE_LOOPBACK_ONLY='true'` in `~/Cove/config`,
+then run `cove reload`. This opts the generated HTTP and HTTPS listeners into
+`127.0.0.1` and `::1`; it does not move another service's listeners. The default
+binding behaviour is unchanged. On Linux, binding ports 80/443 still requires
+FrankenPHP's bind capability, configured by the installer.
+
 When the HTTPS port changes, Cove walks every WordPress site under `~/Cove/Sites/` and runs `wp search-replace` to rewrite stored URLs (siteurl, home, serialized content, custom mappings) so existing sites keep working on the new port. A Laravel site's `APP_URL` moves too (and `VITE_REVERB_PORT`, ready for the front end's next build) unless it was set to another address; plain sites need nothing.
 
 ## Proxying Local Services

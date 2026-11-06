@@ -4152,6 +4152,20 @@ emit_multisite_subdir_rewrites() {
 EOM
 }
 
+# Opt-in loopback listeners let local HTTPS coexist with services bound only
+# to another interface (for example, a VPN HTTPS endpoint). Defaults unchanged.
+cove_caddy_loopback_bind() {
+    [ "$(config_get COVE_LOOPBACK_ONLY)" = true ] || return 0
+    printf '    default_bind 127.0.0.1 ::1'
+}
+
+# Caddy's automatic HTTP redirect server does not inherit default_bind.
+# Declare it explicitly so HTTP stays on loopback as well as HTTPS.
+cove_caddy_loopback_http_redirect() {
+    [ "$(config_get COVE_LOOPBACK_ONLY)" = true ] || return 0
+    printf 'http:// {\n    redir https://{host}%s{uri} permanent\n}\n' "$(https_port_suffix)"
+}
+
 regenerate_caddyfile() {
     echo "🔄 Regenerating Caddyfile..."
     if ! command -v mailpit &> /dev/null; then
@@ -4176,6 +4190,10 @@ regenerate_caddyfile() {
     if [ "$HTTPS_PORT" != "443" ]; then
         port_directives+="    https_port $HTTPS_PORT"$'\n'
     fi
+
+    local loopback_bind
+    loopback_bind=$(cove_caddy_loopback_bind)
+    [ -z "$loopback_bind" ] || port_directives+="$loopback_bind"$'\n'
 
     # Disable opcache_reset in the web SAPI. Plugins (Site Kit, Redirection)
     # call it from upgrader_process_complete; under ZTS that restart races
@@ -4346,6 +4364,8 @@ cove.localhost {
 
 # --- Cove Managed Sites ---
 EOM
+    cove_caddy_loopback_http_redirect >> "$CADDYFILE_PATH"
+
     # It carries Mailpit's password now: this user only.
     chmod 600 "$CADDYFILE_PATH" 2>/dev/null
 
