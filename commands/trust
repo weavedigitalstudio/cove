@@ -18,6 +18,8 @@ cove_trust() {
                 $SUDO_CMD apt install -y libnss3-tools &>/dev/null || true
             elif [ "$PKG_MANAGER" = "dnf" ]; then
                 $SUDO_CMD dnf install -y nss-tools &>/dev/null || true
+            elif [ "$PKG_MANAGER" = "pacman" ]; then
+                $SUDO_CMD pacman -S --needed --noconfirm nss || true
             fi
         fi
     fi
@@ -30,9 +32,24 @@ cove_trust() {
     # and the remainder of the trust work is a no-op. Capture the exit code
     # so the final success banner only fires when something was actually
     # installed.
-    echo "   - Running frankenphp trust..."
+    if [ "$PKG_MANAGER" = "pacman" ]; then
+        echo "   - Installing the root in Arch's system trust store..."
+    else
+        echo "   - Running frankenphp trust..."
+    fi
     local trust_output trust_rc=0
-    if [ "$OS" = "linux" ]; then
+    if [ "$PKG_MANAGER" = "pacman" ]; then
+        # Arch uses p11-kit, not Debian's update-ca-certificates layout.
+        # Copy the live root directly; Caddy may not support this trust store.
+        local arch_root="${XDG_DATA_HOME:-$HOME/.local/share}/caddy/pki/authorities/local/root.crt"
+        if [ -r "$arch_root" ]; then
+            trust_output=$( { $SUDO_CMD install -D -o root -g root -m 644 "$arch_root" /etc/ca-certificates/trust-source/anchors/cove-local-authority.crt && $SUDO_CMD update-ca-trust; } 2>&1)
+            trust_rc=$?
+        else
+            trust_output="Caddy's root certificate is not available yet. Run 'cove enable' then 'cove trust'."
+            trust_rc=1
+        fi
+    elif [ "$OS" = "linux" ]; then
         trust_output=$($SUDO_CMD "$CADDY_CMD" trust 2>&1)
         trust_rc=$?
     else
@@ -50,7 +67,7 @@ cove_trust() {
     # Inject the root explicitly into every NSS DB we can find.
     if [ "$OS" = "linux" ] && command -v certutil &>/dev/null; then
         local root_cert
-        root_cert=$(find "$HOME/.local/share/caddy/pki/authorities/local" \
+        root_cert=$(find "${XDG_DATA_HOME:-$HOME/.local/share}/caddy/pki/authorities/local" \
             -maxdepth 1 -name 'root.crt' 2>/dev/null | head -1)
         # Fallback: the system-trust copy Caddy drops on first auto-install.
         if [ -z "$root_cert" ]; then
@@ -93,7 +110,7 @@ cove_trust() {
             # prune the ones whose fingerprint no longer matches the live root.
             local live_fp stale_fp stale_file pruned=0
             live_fp=$(openssl x509 -in "$root_cert" -noout -fingerprint -sha256 2>/dev/null)
-            if [ -n "$live_fp" ]; then
+            if [ -n "$live_fp" ] && [ "$PKG_MANAGER" != "pacman" ]; then
                 for stale_file in /usr/local/share/ca-certificates/Caddy_Local_Authority*.crt; do
                     [ -f "$stale_file" ] || continue
                     stale_fp=$(openssl x509 -in "$stale_file" -noout -fingerprint -sha256 2>/dev/null)

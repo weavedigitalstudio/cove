@@ -107,8 +107,10 @@ setup_environment() {
             PKG_MANAGER="apt"
         elif [[ "$ID" == "fedora" || "$ID" == "centos" || "$ID" == "rhel" || "$ID_LIKE" == *"fedora"* || "$ID_LIKE" == *"rhel"* ]]; then
             PKG_MANAGER="dnf"
+        elif [[ "$ID" == "arch" || " ${ID_LIKE:-} " == *" arch "* ]]; then
+            PKG_MANAGER="pacman"
         else
-            echo_error "Unsupported Linux distribution: $ID. Supported: Ubuntu, Debian, Fedora, CentOS, RHEL and derivatives."
+            echo_error "Unsupported Linux distribution: $ID. Supported: Ubuntu, Debian, Fedora, CentOS, RHEL, Arch Linux and derivatives."
         fi
         
         # Check if we need to use sudo
@@ -240,7 +242,11 @@ build_cove_from_main() {
             # Minimal RHEL-family images ship without tar.
             if [ "$OS" = "linux" ]; then
                 echo_info "Installing $tool (needed to unpack the source)..."
-                $SUDO_CMD $PKG_MANAGER install -y "$tool" > /dev/null 2>&1 || true
+                if [ "$PKG_MANAGER" = "pacman" ]; then
+                    $SUDO_CMD pacman -S --needed --noconfirm "$tool" || true
+                else
+                    $SUDO_CMD $PKG_MANAGER install -y "$tool" > /dev/null 2>&1 || true
+                fi
             fi
             command -v "$tool" &> /dev/null || echo_error "--main needs $tool to unpack the source. Please install it and run this script again."
         fi

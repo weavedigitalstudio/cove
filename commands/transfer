@@ -1391,13 +1391,15 @@ cmd_restore() {
 
     if [ -n "$url_to" ]; then
         local url_from
-        url_from=$($WP option get home --path="$site_dir" --skip-plugins --skip-themes 2>/dev/null)
+        url_from=$($WP option get home --path="$site_dir" --skip-plugins --skip-themes) \
+            || die "Could not read the imported site's home URL; URL rewriting did not complete."
+        [ -n "$url_from" ] || die "The imported site's home URL is empty; URL rewriting did not complete."
         rewrite_source_urls "$site_dir" "$src" "$url_from" --all-tables
         if [ -n "$url_from" ] && [ "$url_from" != "$url_to" ]; then
             log "Rewriting URLs: $url_from -> $url_to"
             $WP search-replace "$url_from" "$url_to" --all-tables --skip-columns=guid \
                 --path="$site_dir" --skip-plugins --skip-themes --quiet >&2 \
-                || log "  (URL rewrite reported errors)"
+                || die "URL rewriting failed."
             # search-replace covers serialized data but not a home/siteurl that
             # differed in scheme only; set them outright to be certain.
             $WP option update home "$url_to" --path="$site_dir" --skip-plugins --skip-themes >&2 2>/dev/null
@@ -1444,7 +1446,10 @@ COVE_TRANSFER_HELPER
 
 # Run the helper on this machine.
 transfer_local() {
-    transfer_helper_source | bash -s -- "$@"
+    # A phar's /usr/bin/env php must use Cove's runtime too. The system PHP
+    # can lack mysqli even while `cove wp` works, silently skipping rewrites.
+    write_php_tools || return 1
+    transfer_helper_source | PATH="$COVE_TOOLS_DIR:$PATH" bash -s -- "$@"
 }
 
 # Run the helper on the remote, piping it in over the SSH connection pull/push

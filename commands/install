@@ -1,3 +1,24 @@
+# Arch's MariaDB package leaves initialization to the administrator. Respect
+# its configured datadir and never initialize over existing, unfamiliar data.
+initialize_arch_mariadb() {
+    local datadir contents
+    datadir=$(mariadbd --verbose --help 2>/dev/null | awk '$1 == "datadir" && $2 ~ /^\// { print $2; exit }')
+    if [[ "$datadir" != /* || "$datadir" = "/" ]]; then
+        echo "❌ Could not determine MariaDB's data directory." >&2
+        return 1
+    fi
+    $SUDO_CMD test -d "$datadir/mysql" && return 0
+    if $SUDO_CMD test -d "$datadir"; then
+        contents=$($SUDO_CMD find "$datadir" -mindepth 1 -maxdepth 1 -print -quit) || return 1
+        if [ -n "$contents" ]; then
+            echo "❌ MariaDB data directory $datadir is not empty and has no mysql system database; initialize it manually." >&2
+            return 1
+        fi
+    fi
+    echo "   - Initializing MariaDB in $datadir..."
+    $SUDO_CMD mariadb-install-db --user=mysql --basedir=/usr --datadir="$datadir"
+}
+
 # A robust function to check, validate, and install a given dependency.
 install_dependency() {
     local cmd_name="$1"      # The command to check for (e.g., "gum")
@@ -5,6 +26,7 @@ install_dependency() {
     local apt_pkg="$3"       # The package name for apt (Debian/Ubuntu)
     local dnf_pkg="$4"       # The package name for dnf (Fedora/RHEL) - can differ from apt
     local binary_url="$5"    # Optional URL to a binary/tarball for fallback
+    local arch_pkg="${6:-}"  # Arch package; empty means use the binary fallback
 
     # If dnf_pkg not specified, default to apt_pkg
     if [ -z "$dnf_pkg" ]; then
@@ -38,26 +60,35 @@ install_dependency() {
         if "$MAC_BREW" install "$brew_pkg"; then
             installed_successfully=true
         fi
-    else # For Linux (apt/dnf)
+    else # For Linux (apt/dnf/pacman)
         # Determine the correct package name for this distro
         if [ "$PKG_MANAGER" == "apt" ]; then
             pkg_name="$apt_pkg"
+        elif [ "$PKG_MANAGER" = "pacman" ]; then
+            pkg_name="$arch_pkg"
         else
             pkg_name="$dnf_pkg"
         fi
         
         # Only try native package manager if a name is provided
         if [ -n "$pkg_name" ]; then
-            echo "   - Updating package cache..."
+            # Never refresh Arch's databases without upgrading the system:
+            # pacman -Sy followed by -S creates an unsupported partial upgrade.
             if [ "$PKG_MANAGER" == "apt" ]; then
+                echo "   - Updating package cache..."
                 $SUDO_CMD apt-get update -qq >/dev/null 2>&1
-            else
+            elif [ "$PKG_MANAGER" = "dnf" ]; then
+                echo "   - Updating package cache..."
                 $SUDO_CMD dnf makecache -q >/dev/null 2>&1 || true
             fi
             
             echo "   - Installing $pkg_name via $PKG_MANAGER..."
             if [ "$PKG_MANAGER" == "apt" ]; then
                 if $SUDO_CMD apt-get install -y "$pkg_name" >/dev/null 2>&1; then
+                    installed_successfully=true
+                fi
+            elif [ "$PKG_MANAGER" = "pacman" ]; then
+                if $SUDO_CMD pacman -S --needed --noconfirm "$pkg_name"; then
                     installed_successfully=true
                 fi
             else
@@ -86,6 +117,8 @@ install_dependency() {
                     echo "   - Installing tar (required to extract)..."
                     if [ "$PKG_MANAGER" == "apt" ]; then
                         $SUDO_CMD apt-get install -y tar >/dev/null 2>&1
+                    elif [ "$PKG_MANAGER" = "pacman" ]; then
+                        $SUDO_CMD pacman -S --needed --noconfirm tar
                     else
                         $SUDO_CMD dnf install -y tar >/dev/null 2>&1
                     fi
@@ -139,6 +172,18 @@ install_dependency() {
         fi
         exit 1
     fi
+}
+
+# Portable PHP's compiled-in MySQL socket need not match Arch's MariaDB.
+# Both WordPress (mysqli) and Adminer/Laravel (PDO) use this ini file.
+write_arch_php_socket() {
+    local socket
+    socket=$(mariadbd --verbose --help 2>/dev/null | awk '$1 == "socket" && $2 ~ /^\// { print $2; exit }')
+    if [[ "$socket" != /* || "$socket" == *'"'* ]]; then
+        echo "❌ Could not determine MariaDB's socket for PHP." >&2
+        return 1
+    fi
+    printf '\nmysqli.default_socket = "%s"\npdo_mysql.default_socket = "%s"\n' "$socket" "$socket" >> "$PHP_INI_FILE"
 }
 
 cove_install() {
@@ -242,7 +287,13 @@ cove_install() {
         gum_arch="arm64"
     fi
     local gum_url="https://github.com/charmbracelet/gum/releases/download/v0.14.1/gum_0.14.1_Linux_${gum_arch}.tar.gz"
-    install_dependency "gum" "gum" "gum" "gum" "$gum_url"
+    install_dependency "gum" "gum" "gum" "gum" "$gum_url" "gum"
+
+    if [ "$PKG_MANAGER" = "pacman" ]; then
+        # The portable FrankenPHP embeds PHP; distro PHP extensions are
+        # non-ZTS and cannot be loaded into it. These are OS tools only.
+        $SUDO_CMD pacman -S --needed --noconfirm ca-certificates-utils nss libcap openssl tar gzip unzip || return 1
+    fi
 
     # --- Port Selection ---
     # Two paths can run here:
@@ -405,7 +456,20 @@ cove_install() {
         gum style --border normal --margin "1" --padding "1 2" --border-foreground 212 "Installing Dependency: frankenphp"
         local fp_tmpdir
         fp_tmpdir=$(mktemp -d)
-        if [ "$OS" = "macos" ]; then
+        if [ "$PKG_MANAGER" = "pacman" ]; then
+            local fp_asset
+            case "$(uname -m)" in
+                x86_64|aarch64) fp_asset="frankenphp-linux-$(uname -m)-gnu" ;;
+                *) rm -rf "$fp_tmpdir"; echo "❌ No portable FrankenPHP build for $(uname -m)." >&2; return 1 ;;
+            esac
+            echo "   - Downloading ${fp_asset} from FrankenPHP's latest release..."
+            if ! curl -fL --progress-bar "https://github.com/php/frankenphp/releases/latest/download/$fp_asset" -o "$fp_tmpdir/frankenphp" \
+                || ! $SUDO_CMD install -o root -g root -m 755 "$fp_tmpdir/frankenphp" "$BIN_DIR/frankenphp"; then
+                rm -rf "$fp_tmpdir"
+                echo "❌ Could not install portable FrankenPHP." >&2
+                return 1
+            fi
+        elif [ "$OS" = "macos" ]; then
             local fp_asset="frankenphp-mac-arm64"
             [ "$(uname -m)" = "x86_64" ] && fp_asset="frankenphp-mac-x86_64"
             echo "   - Downloading ${fp_asset} from FrankenPHP's latest release..."
@@ -453,7 +517,8 @@ cove_install() {
         if ! frankenphp php-cli -r "echo implode(',', get_loaded_extensions());" 2>/dev/null | grep -qi mysqli; then
             gum style --foreground yellow "⚠️ Warning: mysqli extension not found in FrankenPHP." \
                 "   WordPress may not work correctly." \
-                "   Try: sudo $PKG_MANAGER install php-zts-mysqli"
+                "   Reinstall FrankenPHP with mysqli support before creating WordPress sites."
+            [ "$PKG_MANAGER" != "pacman" ] || return 1
         fi
 
         # Let FrankenPHP bind ports 80/443 as the user. Without this cap,
@@ -482,7 +547,12 @@ cove_install() {
     fi
 
     # MariaDB - Database server
-    install_dependency "mariadb" "mariadb" "mariadb-server" "mariadb-server" ""
+    # On Arch the client may already exist without the server package.
+    if [ "$PKG_MANAGER" = "pacman" ]; then
+        $SUDO_CMD pacman -S --needed --noconfirm mariadb || return 1
+    else
+        install_dependency "mariadb" "mariadb" "mariadb-server" "mariadb-server" ""
+    fi
     # Pin portable collation defaults before the first start (see
     # write_mariadb_config in main for the MariaDB 11.5+ uca1400 trap).
     write_mariadb_config || true
@@ -535,6 +605,9 @@ memory_limit = 1G
 display_errors = 0
 error_reporting = 6143
 INI
+    if [ "$PKG_MANAGER" = "pacman" ]; then
+        write_arch_php_socket || return 1
+    fi
     # wp_mail() from the CLI goes to Mailpit too (see ensure_cli_sendmail_path).
     ensure_cli_sendmail_path
     # WP-CLI under FrankenPHP 1.13.0's php-cli (see ensure_cli_argv_fix).
@@ -584,6 +657,9 @@ INI
             exit 1
         fi
     else # Linux
+        if [ "$PKG_MANAGER" = "pacman" ]; then
+            initialize_arch_mariadb || return 1
+        fi
         if ! $SUDO_CMD systemctl restart mariadb; then
             gum style --foreground red "❌ Failed to start MariaDB via systemctl."
             exit 1
@@ -715,6 +791,10 @@ INI
             if [ "$PKG_MANAGER" = "dnf" ]; then
                 echo "  To trust it system-wide (Fedora/RHEL):"
                 echo "    sudo cp ~/.local/share/caddy/pki/authorities/local/root.crt /etc/pki/ca-trust/source/anchors/caddy.crt"
+                echo "    sudo update-ca-trust"
+            elif [ "$PKG_MANAGER" = "pacman" ]; then
+                echo "  To trust it system-wide (Arch Linux):"
+                echo "    sudo install -m 644 ~/.local/share/caddy/pki/authorities/local/root.crt /etc/ca-certificates/trust-source/anchors/cove-local-authority.crt"
                 echo "    sudo update-ca-trust"
             else
                 echo "  To trust it system-wide (Ubuntu/Debian):"

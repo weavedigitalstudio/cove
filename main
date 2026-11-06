@@ -92,9 +92,11 @@ setup_environment() {
             PKG_MANAGER="apt"
         elif [[ "$ID" == "fedora" || "$ID" == "centos" || "$ID" == "rhel" || "$ID_LIKE" == *"fedora"* || "$ID_LIKE" == *"rhel"* ]]; then
             PKG_MANAGER="dnf"
+        elif [[ "$ID" == "arch" || " ${ID_LIKE:-} " == *" arch "* ]]; then
+            PKG_MANAGER="pacman"
         else
             echo "❌ ERROR: Unsupported Linux distribution: $ID." >&2
-            echo "Supported: Ubuntu, Debian, Fedora, CentOS, RHEL and derivatives." >&2
+            echo "Supported: Ubuntu, Debian, Fedora, CentOS, RHEL, Arch Linux and derivatives." >&2
             exit 1
         fi
         
@@ -1546,6 +1548,7 @@ linux_php_extension_packages() {
     case "$PKG_MANAGER" in
         apt) echo "$base php-zts-pdo-sqlite php-zts-pdo-mysql php-zts-pdo-pgsql" ;;
         dnf) echo "$base php-zts-pdo_sqlite php-zts-pdo_mysql php-zts-pdo_pgsql" ;;
+        pacman) : ;; # Portable FrankenPHP embeds its extensions; Arch's PHP is non-ZTS.
     esac
 }
 
@@ -1756,6 +1759,8 @@ cove_pg_setup() {
             if [ "$PKG_MANAGER" = "apt" ]; then
                 $SUDO_CMD apt-get update -qq >/dev/null 2>&1
                 $SUDO_CMD env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq postgresql >/dev/null 2>&1
+            elif [ "$PKG_MANAGER" = "pacman" ]; then
+                $SUDO_CMD pacman -S --needed --noconfirm postgresql
             else
                 $SUDO_CMD dnf install -y -q postgresql-server postgresql >/dev/null 2>&1
             fi || { echo "❌ Error: Could not install PostgreSQL." >&2; return 1; }
@@ -1767,6 +1772,9 @@ cove_pg_setup() {
             hba=/var/lib/pgsql/data/pg_hba.conf
             $SUDO_CMD test -f /var/lib/pgsql/data/PG_VERSION || $SUDO_CMD postgresql-setup --initdb >/dev/null 2>&1
             $SUDO_CMD sed -i -E 's/^(host[[:space:]]+all[[:space:]]+all[[:space:]]+(127\.0\.0\.1\/32|::1\/128)[[:space:]]+)ident/\1md5/' "$hba"
+        fi
+        if [ "$PKG_MANAGER" = "pacman" ] && ! $SUDO_CMD test -f /var/lib/postgres/data/PG_VERSION; then
+            $SUDO_CMD -u postgres initdb --locale=C.UTF-8 --encoding=UTF8 -D /var/lib/postgres/data >/dev/null || return 1
         fi
         $SUDO_CMD systemctl enable postgresql >/dev/null 2>&1
         $SUDO_CMD systemctl restart postgresql >/dev/null 2>&1
@@ -1882,6 +1890,8 @@ ensure_redis() {
         if [ "$PKG_MANAGER" = "apt" ]; then
             $SUDO_CMD apt-get update -qq >/dev/null 2>&1
             $SUDO_CMD env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq redis-server >/dev/null 2>&1
+        elif [ "$PKG_MANAGER" = "pacman" ]; then
+            $SUDO_CMD pacman -S --needed --noconfirm valkey
         else
             $SUDO_CMD dnf install -y -q redis >/dev/null 2>&1 || $SUDO_CMD dnf install -y -q valkey >/dev/null 2>&1
         fi || { echo "❌ Error: Could not install Redis." >&2; return 1; }
@@ -1952,7 +1962,7 @@ cove_redis_site_env() {
 # webroot Cove serves anyway. Cove's own files share that folder: these are
 # listed in the app's .gitignore, never copied by clone or snapshot, and
 # never replaced by a restore.
-COVE_SITE_OWN="logs private history php_version mappings multisite twin tailscale_port lan_config laravel_workers reverb_port"
+COVE_SITE_OWN="logs private history php_version mappings public_mappings multisite twin tailscale_port lan_config laravel_workers reverb_port"
 
 site_is_laravel() {
     [ -f "$1/artisan" ] && [ -f "$1/bootstrap/app.php" ] && [ -f "$1/public/index.php" ]
@@ -2299,6 +2309,11 @@ cove_required_hosts() {
                 # loopback natively, so a "*.name" line would be inert
                 # — and would prompt for sudo on every reload.
                 if [ -n "$mapping" ] && [[ "$mapping" != \*.* ]]; then
+                    # Public previews resolve through their real DNS provider.
+                    # Keep the Caddy alias, but never shadow it with loopback.
+                    if [ -f "$site_path/public_mappings" ] && grep -Fxq -- "$mapping" "$site_path/public_mappings"; then
+                        continue
+                    fi
                     # Checked again on the way to a root-written
                     # file: the mappings file sits where a site's
                     # own PHP can rewrite it, and a line holding
@@ -2462,6 +2477,9 @@ CNF
     fi
 
     if [ -f "$conf_file" ] && [ "$(cat "$conf_file" 2>/dev/null)" = "$content" ]; then
+        # The daemon runs as mysql, so this non-secret drop-in must be
+        # readable even when the installer inherited umask 077.
+        [ "$OS" != "linux" ] || $SUDO_CMD chmod 644 "$conf_file" || return 2
         return 1
     fi
 
@@ -2477,6 +2495,7 @@ CNF
         fi
     else
         printf '%s\n' "$content" | $SUDO_CMD tee "$conf_file" >/dev/null || return 2
+        $SUDO_CMD chmod 644 "$conf_file" || return 2
     fi
     echo "   - ✅ Wrote MariaDB collation defaults to $conf_file"
     return 0
@@ -18974,9 +18993,10 @@ display_command_help() {
             echo ""
             echo "Installs and configures what Cove needs: FrankenPHP (Caddy with PHP),"
             echo "MariaDB, Mailpit, gum and WP-CLI. macOS uses Homebrew (FrankenPHP comes"
-            echo "from its GitHub release, for Apple Silicon and Intel); Linux uses apt or"
-            echo "dnf. It also sets up ~/Cove. PostgreSQL and Redis are optional and set up"
-            echo "when a Laravel site needs them (see cove postgres, cove redis)."
+            echo "from its GitHub release, for Apple Silicon and Intel); Linux uses apt,"
+            echo "dnf, or pacman (Arch and derivatives). It also sets up ~/Cove. PostgreSQL"
+            echo "and Redis are optional, set up when a Laravel site needs them"
+            echo "(see cove postgres, cove redis)."
             echo ""
             echo "Options:"
             echo "  --yes, -y, --force   Skip confirmation prompts for scripted installs."
@@ -19357,9 +19377,10 @@ display_command_help() {
             echo "Pair with 'cove login <site> --url=<subsite-url>' to log in to one."
             ;;
         mappings)
-            echo "Usage: cove mappings <site> [add|remove] [domain]"
+            echo "Usage: cove mappings <site> [add|remove] [domain] [--public]"
             echo ""
             echo "Manage additional domain mappings for a site."
+            echo "Add --public to keep a mapping out of /etc/hosts (external DNS)."
             echo "Mappings allow a single site to be served from multiple domains."
             echo "A leading '*.' (quoted: '*.mysite.localhost') answers on every subdomain."
             ;;

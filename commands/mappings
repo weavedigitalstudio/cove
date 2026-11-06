@@ -2,16 +2,22 @@ cove_mappings() {
     local site_name="$1"
     local action="$2"
     local domain="$3"
+    local mapping_mode="${4:-}"
+    if [ -n "$mapping_mode" ] && { [ "$action" != "add" ] || [ "$mapping_mode" != "--public" ]; }; then
+        echo "Error: --public is supported only with mappings add." >&2
+        return 1
+    fi
 
     # --- 1. Validation ---
     if [ -z "$site_name" ]; then
         gum style --foreground red "❌ Error: A site name is required."
-        echo "Usage: cove mappings <site> [add|remove] [domain]"
+        echo "Usage: cove mappings <site> [add|remove] [domain] [--public]"
         exit 1
     fi
 
     local site_dir="$SITES_DIR/$site_name.localhost"
     local mappings_file="$site_dir/mappings"
+    local public_file="$site_dir/public_mappings"
 
     if [ ! -d "$site_dir" ]; then
         site_not_found "$site_name"
@@ -47,8 +53,15 @@ cove_mappings() {
 
         # Simple validation: prevent duplicates
         if [ -f "$mappings_file" ] && grep -Fxq "$domain" "$mappings_file"; then
+            if [ "$mapping_mode" == "--public" ]; then
+                if ! grep -Fxq -- "$domain" "$public_file" 2>/dev/null; then
+                    echo "$domain" >> "$public_file" || return 1
+                fi
+                prune_etc_hosts "$domain"
+                return 0
+            fi
             gum style --foreground yellow "⚠️  Domain '$domain' is already mapped to this site."
-            exit 0
+            return 0
         fi
 
         local owner
@@ -58,11 +71,17 @@ cove_mappings() {
         fi
 
         # Create file if not exists and append
-        echo "$domain" >> "$mappings_file"
+        if [ "$mapping_mode" == "--public" ]; then
+            if ! grep -Fxq -- "$domain" "$public_file" 2>/dev/null; then
+                echo "$domain" >> "$public_file" || return 1
+            fi
+        fi
+        echo "$domain" >> "$mappings_file" || return 1
         echo "✅ Added mapping: $domain"
         
         regenerate_caddyfile
         update_etc_hosts
+        [ "$mapping_mode" != "--public" ] || prune_etc_hosts "$domain"
         return 0
     fi
 
@@ -78,6 +97,10 @@ cove_mappings() {
             if grep -Fxq "$domain" "$mappings_file"; then
                 grep -Fxv "$domain" "$mappings_file" > "${mappings_file}.tmp"
                 mv "${mappings_file}.tmp" "$mappings_file"
+                if [ -f "$public_file" ]; then
+                    grep -Fxv -- "$domain" "$public_file" > "${public_file}.tmp"
+                    mv "${public_file}.tmp" "$public_file"
+                fi
                 echo "✅ Removed mapping: $domain"
                 
                 regenerate_caddyfile
@@ -95,6 +118,6 @@ cove_mappings() {
 
     # --- 5. Unknown Action ---
     gum style --foreground red "❌ Error: Unknown action '$action'."
-    echo "Usage: cove mappings <site> [add|remove] [domain]"
+    echo "Usage: cove mappings <site> [add|remove] [domain] [--public]"
     exit 1
 }

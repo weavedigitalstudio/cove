@@ -694,6 +694,9 @@ cove_laravel_need_pdo() {
     if [ -n "$(linux_php_extension_packages)" ]; then
         fix="Install PHP's PDO extensions, then restart Cove's web server:"$'\n'"  sudo $PKG_MANAGER install $(linux_php_extension_packages | tr ' ' '\n' | grep pdo | tr '\n' ' ')"$'\n'"  sudo systemctl restart cove"
     fi
+    if [ "$PKG_MANAGER" = "pacman" ]; then
+        fix="Reinstall portable FrankenPHP with $ext compiled in. Arch's PHP extensions are non-ZTS and cannot be loaded by FrankenPHP."
+    fi
     gum style --foreground red "❌ Error: This PHP has no $ext extension." "$fix"
     return 1
 }

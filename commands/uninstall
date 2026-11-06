@@ -11,7 +11,13 @@ cove_untrust_root() {
         root="${XDG_DATA_HOME:-$HOME/.local/share}/caddy/pki/authorities/local/root.crt"
         [ -f "$root" ] || root=$(find /usr/local/share/ca-certificates -maxdepth 1 -name 'Caddy_Local_Authority*.crt' 2>/dev/null | head -1)
     fi
-    if command -v "$CADDY_CMD" >/dev/null 2>&1 || [ -x "$CADDY_CMD" ]; then
+    if [ "$PKG_MANAGER" = "pacman" ]; then
+        # Only the anchor Cove writes; keep the rest of the system store.
+        if $SUDO_CMD rm -f /etc/ca-certificates/trust-source/anchors/cove-local-authority.crt \
+            && $SUDO_CMD update-ca-trust; then
+            ok=true
+        fi
+    elif command -v "$CADDY_CMD" >/dev/null 2>&1 || [ -x "$CADDY_CMD" ]; then
         if [ -n "$root" ] && [ -f "$root" ]; then
             { "$CADDY_CMD" untrust --cert "$root" &>/dev/null || $SUDO_CMD "$CADDY_CMD" untrust --cert "$root" &>/dev/null; } && ok=true
         else
@@ -319,6 +325,9 @@ cove_uninstall() {
         fp=$(command -v frankenphp 2>/dev/null)
         done_lines+=("  brew uninstall gum mariadb mailpit wp-cli   (plus postgresql@17 and redis if Cove set them up)")
         [ -n "$fp" ] && done_lines+=("  $([ -w "$(dirname "$fp")" ] || echo "sudo ")rm $fp")
+    elif [ "$PKG_MANAGER" = "pacman" ]; then
+        done_lines+=("  sudo pacman -R gum mariadb   (plus postgresql and valkey if Cove set them up)")
+        done_lines+=("  sudo rm /usr/local/bin/frankenphp /usr/local/bin/mailpit /usr/local/bin/wp")
     else
         done_lines+=("  sudo $PKG_MANAGER remove frankenphp 'php-zts-*' mariadb-server   (plus postgresql and redis if Cove set them up)")
         done_lines+=("  sudo rm /usr/local/bin/mailpit /usr/local/bin/gum /usr/local/bin/wp")

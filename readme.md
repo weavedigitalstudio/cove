@@ -53,7 +53,7 @@ Run the following in your terminal to install `cove`.
 bash <(curl -fsSL https://cove.run/install-cove.sh)
 ```
 
-On macOS (Apple Silicon or Intel), the installer will offer to install Homebrew first if it's not already present. On Linux (Ubuntu, Debian, Fedora, Rocky Linux/RHEL), make sure `curl` is installed before running it.
+On macOS (Apple Silicon or Intel), the installer will offer to install Homebrew first if it's not already present. On Linux (Ubuntu, Debian, Fedora, Rocky Linux/RHEL, Arch Linux and derivatives such as Omarchy), make sure `curl` is installed before running it.
 
 To preview an unreleased build from the `main` branch — useful for verifying a fix before it's tagged — pass `--main`. The installer downloads the main branch and builds `cove.sh` from its source:
 
@@ -163,7 +163,7 @@ For browsing and editing, the dashboard's **databases** view lists every databas
 | `cove memory [set <value>]` | Audits `memory_limit` across Cove's ini, the FrankenPHP web server, and every `php` on your PATH. `set 2G` bumps Cove's ini and offers to update each Homebrew/system ini. |
 | `cove directive add\|update <site> [rules \| --rules "…" \| --file <path>]` | Sets a site's custom Caddy rules (a reverse proxy, headers, auth), replacing any it had. Without rules it opens an editor in a terminal, or reads them from stdin: `cat rules.conf \| cove directive add mysite`. `cove directive <site> add` works too. |
 | `cove directive delete <site>` / `list` | Removes a site's rules, or lists every site's. |
-| `cove mappings <site> [add\|remove] [domain]` | Manages additional domain mappings for a site. A leading `*.` (quote it: `'*.mysite.localhost'`) answers on every subdomain. Also in the dashboard under a site's **Domains…** menu item. |
+| `cove mappings <site> [add\|remove] [domain]` | Manages additional domain mappings for a site. A leading `*.` (quote it: `'*.mysite.localhost'`) answers on every subdomain. Add `--public` when adding a mapping to retain external DNS resolution instead of adding it to `/etc/hosts`. Also in the dashboard under a site's **Domains…** menu item. |
 | `cove twin <site> [add\|remove] [--domain=…] [--root=…] [--as-site=…]` | Serves another folder of a site, on the same database, at a domain of its own (`wp.<site>.localhost` by default). Built for Minn Engine's test sites, which keep a complete reference WordPress in `wp-reference/`: the engine answers at the site's address and WordPress at the twin's. `--as-site` adds a domain that answers as the site itself, for comparing the two request for request. |
 | `cove proxy <add\|list\|delete>` | Manages standalone reverse proxy entries in the Caddyfile. |
 
